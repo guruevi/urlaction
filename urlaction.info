@@ -1,0 +1,5 @@
+name = URL Actions
+description = Adds actions to submit data to external URLs through triggers
+package = Rules
+core = 7.x
+files[] = urlaction.module

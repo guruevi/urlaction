@@ -1,0 +1,362 @@
+<?php
+
+/**
+ * Implement hook_enable()
+ */
+function urlaction_enable()
+{
+    drupal_set_message($message = t('The URL Action module was successfully enabled.'), $type = 'status');
+}
+
+/**
+ * Implement hook_disable()
+ */
+function urlaction_disable()
+{
+    drupal_set_message($message = t('The URL Action module was successfully disabled.'), $type = 'status');
+}
+
+/**
+ * Implement hook_help()
+ */
+function urlaction_help($path, $arg)
+{
+    switch ($path) {
+        case 'admin/help#urlaction':
+            $output = '';
+            $output .= '<h3>' . t('About') . '</h3>';
+            $output .= '<p>' . t("The URL Action module creates an action that can submit data to an URL") . '</p>';
+            return $output;
+    }
+}
+
+/**
+ * Implement hook_uninstall()
+ */
+function urlaction_uninstall()
+{
+    drupal_set_message($message = t('The URLAction module was successfully uninstalled.'), $type = 'status');
+}
+
+/**
+ * Implement hook_rules_action_info()
+ */
+function urlaction_rules_action_info()
+{
+    $actions = array(
+        'urlaction_basic_action' => array(
+            'label' => t('Debug data'),
+            'group' => t('URL Actions'),
+            'parameter' => array(
+                'data' => array(
+                    'type' => '*',
+                    'label' => t('Data to debug')
+                )
+            )
+        ),
+        'urlaction_civicrm_event_to_fetlife' => array(
+            'label' => t('Send CiviCRM Event to FetLife'),
+            'group' => t('URL Actions'),
+            'parameter' => array(
+                'event' => array(
+                    'type' => '*',
+                    'label' => t('Event data')
+                )
+            )
+        ),
+        'urlaction_civicrm_event_to_google_calendar' => array(
+            'label' => t('Send CiviCRM Event to Google Calendar'),
+            'group' => t('URL Actions'),
+            'parameter' => array(
+                'event' => array(
+                    'type' => '*',
+                    'label' => t('Event data')
+                )
+            )
+        )
+    );
+    return $actions;
+}
+
+/**
+ * Implement urlaction_basic_action
+ */
+function urlaction_basic_action($data)
+{
+    drupal_set_message(t('URL Action fired'));
+    error_log(print_r($data, TRUE));
+    watchdog('urlaction', 'URL Action fired.');
+}
+
+/**
+ * Implement urlacton_civicrm_event_to_google_calendar
+ */
+function urlaction_civicrm_event_to_google_calendar($event)
+{
+	if ($event->is_public != 1 || $event->is_active != 1) {
+		return false;
+	}
+	
+    $client_id = "YourClientID";
+    $service_account_name = "YourAccountName";
+    $key = file_get_contents(dirname(__FILE__) . "/google-privatekey.p12");
+    
+    set_include_path(get_include_path() . PATH_SEPARATOR . dirname(__FILE__) . "google-api-php-client/src/");
+    
+    require_once ("Google/Client.php");
+    require_once ("Google/Auth/AssertionCredentials.php");
+    require_once ("Google/Service/Calendar.php");
+
+    $client = new Google_Client();
+    $client->setClientId($client_id);
+    $client->setApplicationName("CiviCRM to Google Calendar");
+    $service = new Google_Service_Calendar($client);
+    
+    if (isset($_SESSION['service_token'])) {
+        $client->setAccessToken($_SESSION['service_token']);
+    }
+    $cred = new Google_Auth_AssertionCredentials($service_account_name, array(
+        'https://www.googleapis.com/auth/calendar'
+    ), $key);
+    $client->setAssertionCredentials($cred);
+    if ($client->getAuth()->isAccessTokenExpired()) {
+        $client->getAuth()->refreshTokenWithAssertion($cred);
+    }
+    $_SESSION['service_token'] = $client->getAccessToken();
+    
+    $attendee = new Google_Service_Calendar_EventAttendee();
+    $attendee->getSelf();
+    $attendee->setEmail('evi.vanoost@gmail.com');
+    
+    $google_event = new Google_Service_Calendar_Event();
+    $google_event->setSummary($event->summary);
+    $google_event->setLocation("at the RKS Space");
+    $start_date = strtotime($event->start_date);
+    $end_date = strtotime($event->end_date);
+    $start = new Google_Service_Calendar_EventDateTime();
+    $start->setDateTime(date('c', $start_date));
+    $google_event->setStart($start);
+    $end = new Google_Service_Calendar_EventDateTime();
+    $end->setDateTime(date('c', $end_date));
+    $google_event->setEnd($end);
+    $google_event->setVisibility('public');
+    $google_event->setAttendees(array($attendee));
+    $createdEvent = $service->events->insert('primary', $google_event);
+    
+    drupal_set_message(t('Event data sent to Google Calendar'));
+    watchdog('urlaction', 'URL Action civicrm_event_to_google_calendar completed.');
+}
+
+/**
+ * Implement urlaction_civicrm_event_to_fetlife action
+ */
+function urlaction_civicrm_event_to_fetlife($event)
+{
+	if ($event->is_share != 1 || $event->is_public != 1 || $event->is_active != 1) {
+		return false;
+	}
+	
+    $loginReq = curl_init('https://fetlife.com/session');
+    curl_setopt($loginReq, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($loginReq, CURLOPT_HEADER, true);
+    curl_setopt($loginReq, CURLOPT_AUTOREFERER, true);
+    curl_setopt($loginReq, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($loginReq, CURLOPT_POST, 1);
+    curl_setopt($loginReq, CURLOPT_POSTFIELDS, 'nickname_or_email=NickName&password=Password&commit=1&remember_me=1');
+    curl_setopt($loginReq, CURLOPT_COOKIEJAR, file_directory_temp() . '/cookies.txt');
+    $response = curl_exec($loginReq);
+    curl_close($loginReq);
+    if (empty($response)) {
+        drupal_set_message(t('An error occurred logging in to FetLife'), 'error');
+        return;
+    }
+    
+    /*
+     * TODO: Set CURLOPT_RETURNTRANSFER and get any error messages returned by the website. Right now we're blindly trusting this works
+     */
+    
+    /*
+     * This is what an Event Object looks like ($event)
+     * CRM_Event_DAO_Event Object
+ 	[id] => 95
+    [title] => Title
+    [summary] => Summary
+    [description] => Yadiyadiyada
+    [event_type_id] => 4
+    [participant_listing_id] => null
+    [is_public] => 1
+    [start_date] => 20141106190000
+    [end_date] => 20141106210000
+    [is_online_registration] => 1
+    [registration_link_text] => Register Now
+    [registration_start_date] => 
+    [registration_end_date] => 
+    [max_participants] => null
+    [event_full_text] => This event is currently full.
+    [is_monetary] => 0
+    [financial_type_id] => 
+    [payment_processor] => 
+    [is_map] => 1
+    [is_active] => 1
+    [fee_label] => 
+    [is_show_location] => 1
+    [loc_block_id] => 2
+    [default_role_id] => 1
+    [intro_text] => <p>You may register online for this event. Your registration will be marked in our database however you still need to check in with a board or staff member on duty at the door.</p>
+
+<p>If you register online you may receive automated reminders of this event.</p>
+    [footer_text] => 
+    [confirm_title] => Confirm Your Registration Information
+    [confirm_text] => 
+    [confirm_footer_text] => 
+    [is_email_confirm] => 1
+    [confirm_email_text] => Thank you for registering to attend this event. Please note you still need to check in at the door with a staff or board member on duty.
+    [confirm_from_name] => The RKS Board
+    [confirm_from_email] => rks@rochesterkinksociety.com
+    [cc_confirm] => 
+    [bcc_confirm] => 
+    [default_fee_id] => 
+    [default_discount_fee_id] => 
+    [thankyou_title] => Thank You for Registering
+    [thankyou_text] => 
+    [thankyou_footer_text] => 
+    [is_pay_later] => 0
+    [pay_later_text] => 
+    [pay_later_receipt] => 
+    [is_partial_payment] => 0
+    [initial_amount_label] => 
+    [initial_amount_help_text] => 
+    [min_initial_amount] => 
+    [is_multiple_registrations] => 0
+    [allow_same_participant_emails] => 0
+    [has_waitlist] => 
+    [requires_approval] => 0
+    [expiration_time] => 
+    [waitlist_text] => 
+    [approval_req_text] => 
+    [is_template] => 0
+    [template_title] => 
+    [created_id] => 3
+    [created_date] => 20140805131155
+    [currency] => 
+    [campaign_id] => 
+    [is_share] => 1
+    [parent_event_id] => 
+    [slot_label_id] => 
+    [_DB_DataObject_version] => 1.8.12
+    [__table] => civicrm_event
+    [N] => 0
+    [_database_dsn] => 
+    [_database_dsn_md5] => f1ec974970f9c2a4b1d82c2a7160cce3
+    [_database] => civicrm
+    [_query] => Array
+        (
+            [condition] => 
+            [group_by] => 
+            [order_by] => 
+            [having] => 
+            [limit_start] => 
+            [limit_count] => 
+            [data_select] => *
+        )
+
+    [_DB_resultid] => 
+    [_resultFields] => 
+    [_link_loaded] => 
+    [_join] => 
+    [_lastError] => 
+)
+
+     */
+    
+    $eventInfo = array();
+    $eventInfo["event[name]"] = $event->title;
+    $eventInfo["event[tagline]"] = $event->summary;
+    
+    // FetLife doesn't like &nbsp; and actually cuts off there?
+    $description = preg_replace("/&#?[a-z0-9]+;/i", "", $event->description);
+    // Convert br to \n
+    $description = preg_replace('#<br\s*/?>#i', "\n", $description);
+    // Strip all other HTML characters
+    $description = strip_tags($description);
+    
+    /*
+     * Parse cost and dress code from the Event Description
+     */
+    $eventInfo["event[cost]"] = "See event description";
+    $eventInfo["event[dress_code]"] = "See event description";
+    $eventInfo["event[location]"] = "See event description";
+    $eventInfo["event[address]"] = "email rks@rochesterkinksociety.com for more information!";
+    
+    $description_array = explode("\n", $description);
+    foreach ($description_array as $key => $line) {
+    	//Strip extra white spaces
+    	$line = trim($line);
+    	if (strpos($line, "Cost:") === 0) {
+    		$eventInfo["event[cost]"] = trim(substr($line, 5));
+    		unset ($description_array[$key]);
+    	}
+    	if (strpos($line, "Dress Code:") === 0) {
+    		$eventInfo["event[dress_code]"] = trim(substr($line, 11));
+    		unset ($description_array[$key]);
+    	}
+    	if (strpos($line, "Location:") === 0) {
+    		$eventInfo["event[location]"] = trim(substr($line, 10));
+    		unset ($description_array[$key]);
+    	}
+    	if (strpos($line, "Address:") === 0) {
+    		$eventInfo["event[address]"] = trim(substr($line, 8));
+    		unset ($description_array[$key]);
+    	}
+    }
+    
+    $eventInfo["event[description]"] = implode("\n", $description_array);
+    
+    $start_date = date_parse($event->start_date);
+    $end_date = date_parse($event->end_date);
+    
+    $eventInfo["event[start_date_time(1i)]"] = $start_date['year']; // Year
+    $eventInfo["event[start_date_time(2i)]"] = $start_date['month']; // Month
+    $eventInfo["event[start_date_time(3i)]"] = $start_date['day']; // Day
+    $eventInfo["event[start_date_time(4i)]"] = $start_date['hour']; // Hour (24h)
+    $eventInfo["event[start_date_time(5i)]"] = $start_date['minute']; // Minute
+    
+    $eventInfo["event[end_date_time(1i)]"] = $end_date['year']; // Year
+    $eventInfo["event[end_date_time(2i)]"] = $end_date['month']; // Month
+    $eventInfo["event[end_date_time(3i)]"] = $end_date['day']; // Day
+    $eventInfo["event[end_date_time(4i)]"] = $end_date['hour']; // Hour (24h)
+    $eventInfo["event[end_date_time(5i)]"] = $end_date['minute']; // Minute
+    
+    $eventInfo["event[country_id]"] = 233; // 233 = US
+    $eventInfo["event[administrative_area_id]"] = 3969; // 3969 = NY
+    $eventInfo["event[city_id]"] = 11544; // 11544 = Rochester
+    $eventInfo["commit"] = "Pimp Your Event";
+    
+    $postfield = "";
+    foreach ($eventInfo as $tag => $text) {
+        $postfield .= $tag . "=" . $text . "&";
+    }
+    
+    $eventsReq = curl_init('https://fetlife.com/events');
+    
+    curl_setopt($eventsReq, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($eventsReq, CURLOPT_HEADER, true);
+    curl_setopt($eventsReq, CURLOPT_AUTOREFERER, true);
+    curl_setopt($eventsReq, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($eventsReq, CURLOPT_POST, 1);
+    curl_setopt($eventsReq, CURLOPT_POSTFIELDS, $postfield);
+    curl_setopt($eventsReq, CURLOPT_COOKIEFILE, file_directory_temp() . '/cookies.txt');
+    $response = curl_exec($eventsReq);
+    curl_close($eventsReq);
+    if (empty($response)) {
+        drupal_set_message(t('An error occurred sending data to FetLife'), 'error');
+        return;
+    }
+    
+    /*
+     * TODO: Set CURLOPT_RETURNTRANSFER and get any error messages returned by the website. Right now we're blindly trusting this works
+     */
+    
+    drupal_set_message(t('Event data sent to FetLife'));
+    watchdog('urlaction', 'URL Action civicrm_event_to_fetlife completed.');
+}
